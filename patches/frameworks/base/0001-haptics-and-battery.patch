@@ -1,0 +1,234 @@
+Subject: [PATCH] frameworks/base: haptics and battery
+Base-commit: 4617d71eb23447fb325178ac34a0fd7daa1b0597
+
+diff --git a/packages/SystemUI/res/values/config.xml b/packages/SystemUI/res/values/config.xml
+index e0bc1ec0e..83b9dcc22 100644
+--- a/packages/SystemUI/res/values/config.xml
++++ b/packages/SystemUI/res/values/config.xml
+@@ -1049,6 +1049,9 @@
+     -->
+     <integer name="config_restToUnlockDurationDefault">300</integer>
+ 
++    <!-- Optional slider pulse for motors without amplitude control, in milliseconds. -->
++    <integer name="config_sliderHapticFallbackPulseDurationMillis">0</integer>
++
+     <!--
+     Width in pixels of the Side FPS sensor.
+     -->
+diff --git a/packages/SystemUI/src/com/android/systemui/haptics/slider/SliderHapticFeedbackProvider.kt b/packages/SystemUI/src/com/android/systemui/haptics/slider/SliderHapticFeedbackProvider.kt
+index 82c284a57..601079fd1 100644
+--- a/packages/SystemUI/src/com/android/systemui/haptics/slider/SliderHapticFeedbackProvider.kt
++++ b/packages/SystemUI/src/com/android/systemui/haptics/slider/SliderHapticFeedbackProvider.kt
+@@ -53,6 +53,8 @@ class SliderHapticFeedbackProvider(
+         AccelerateInterpolator(config.velocityInterpolatorFactor)
+     private val positionAccelerateInterpolator =
+         AccelerateInterpolator(config.progressInterpolatorFactor)
++    private val sliderHapticFallback = vibratorHelper.sliderHapticFallback
++    private var lastFallbackTickTime = -FALLBACK_TICK_INTERVAL_MILLIS
+     private var dragTextureLastTime = clock.elapsedRealtime()
+     var dragTextureLastProgress = -1f
+         private set
+@@ -72,6 +74,10 @@ class SliderHapticFeedbackProvider(
+      * @param[absoluteVelocity] Velocity of the handle when it reached the bookend.
+      */
+     private fun vibrateOnEdgeCollision(absoluteVelocity: Float) {
++        sliderHapticFallback?.let {
++            playFallbackTick(it, clock.elapsedRealtime())
++            return
++        }
+         val powerScale = scaleOnEdgeCollision(absoluteVelocity)
+         if (Flags.msdlFeedback()) {
+             val properties =
+@@ -133,17 +139,28 @@ class SliderHapticFeedbackProvider(
+             return
+         }
+ 
+-        val powerScale = scaleOnDragTexture(absoluteVelocity, normalizedSliderProgress)
+-
+-        // Deliver haptic feedback
+-        when {
+-            config.sliderStepSize == 0f -> performContinuousSliderDragVibration(powerScale)
+-            config.sliderStepSize > 0f -> performDiscreteSliderDragVibration(powerScale)
++        if (sliderHapticFallback != null) {
++            if (!playFallbackTick(sliderHapticFallback, currentTime)) return
++        } else {
++            val powerScale = scaleOnDragTexture(absoluteVelocity, normalizedSliderProgress)
++            when {
++                config.sliderStepSize == 0f -> performContinuousSliderDragVibration(powerScale)
++                config.sliderStepSize > 0f -> performDiscreteSliderDragVibration(powerScale)
++            }
+         }
+         dragTextureLastTime = currentTime
+         dragTextureLastProgress = normalizedSliderProgress
+     }
+ 
++    private fun playFallbackTick(effect: VibrationEffect, elapsedRealtimeMillis: Long): Boolean {
++        if (elapsedRealtimeMillis - lastFallbackTickTime < FALLBACK_TICK_INTERVAL_MILLIS) {
++            return false
++        }
++        vibratorHelper.vibrate(effect, VIBRATION_ATTRIBUTES_PIPELINING)
++        lastFallbackTickTime = elapsedRealtimeMillis
++        return true
++    }
++
+     private fun Float.isDiscreteStep(stepSize: Float, epsilon: Float = 0.001f): Boolean {
+         if (stepSize <= 0f) return false
+         val division = this / stepSize
+@@ -242,6 +259,9 @@ class SliderHapticFeedbackProvider(
+     override fun onSelectAndArrow(@FloatRange(from = 0.0, to = 1.0) progress: Float) {}
+ 
+     private companion object {
++        // Let a binary motor spin down between ticks, including at either endpoint.
++        private const val FALLBACK_TICK_INTERVAL_MILLIS = 200L
++
+         private val VIBRATION_ATTRIBUTES_PIPELINING =
+             VibrationAttributes.Builder()
+                 .setUsage(VibrationAttributes.USAGE_TOUCH)
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/VibratorHelper.java b/packages/SystemUI/src/com/android/systemui/statusbar/VibratorHelper.java
+index bddb76ab4..a3af11c68 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/VibratorHelper.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/VibratorHelper.java
+@@ -18,6 +18,7 @@ package com.android.systemui.statusbar;
+ 
+ import android.annotation.NonNull;
+ import android.annotation.Nullable;
++import android.content.res.Resources;
+ import android.media.AudioAttributes;
+ import android.os.Process;
+ import android.os.VibrationAttributes;
+@@ -28,6 +29,8 @@ import android.view.View;
+ import androidx.annotation.VisibleForTesting;
+ 
+ import com.android.systemui.dagger.SysUISingleton;
++import com.android.systemui.dagger.qualifiers.Main;
++import com.android.systemui.res.R;
+ 
+ import org.jetbrains.annotations.NotNull;
+ 
+@@ -58,13 +61,15 @@ public class VibratorHelper {
+             VibrationAttributes.createForUsage(VibrationAttributes.USAGE_COMMUNICATION_REQUEST);
+ 
+     private final Executor mExecutor;
++    @Nullable private final VibrationEffect mSliderHapticFallback;
+ 
+     /**
+      * Creates a vibrator helper on a new single threaded {@link Executor}.
+      */
+     @Inject
+-    public VibratorHelper(@Nullable Vibrator vibrator) {
+-        this(vibrator, Executors.newSingleThreadExecutor());
++    public VibratorHelper(@Nullable Vibrator vibrator, @Main Resources resources) {
++        this(vibrator, Executors.newSingleThreadExecutor(),
++                resources.getInteger(R.integer.config_sliderHapticFallbackPulseDurationMillis));
+     }
+ 
+     /**
+@@ -72,8 +77,23 @@ public class VibratorHelper {
+      */
+     @VisibleForTesting
+     public VibratorHelper(@Nullable Vibrator vibrator, Executor executor) {
++        this(vibrator, executor, 0);
++    }
++
++    private VibratorHelper(@Nullable Vibrator vibrator, Executor executor,
++            int sliderPulseDurationMillis) {
+         mExecutor = executor;
+         mVibrator = vibrator;
++        mSliderHapticFallback = sliderPulseDurationMillis > 0
++                && vibrator != null && vibrator.hasVibrator() && !vibrator.hasAmplitudeControl()
++                ? VibrationEffect.createOneShot(sliderPulseDurationMillis,
++                        VibrationEffect.DEFAULT_AMPLITUDE)
++                : null;
++    }
++
++    @Nullable
++    public VibrationEffect getSliderHapticFallback() {
++        return mSliderHapticFallback;
+     }
+ 
+     /**
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt
+index a050bca95..acbfd3d99 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt
+@@ -235,16 +235,22 @@ fun BatteryLayout(
+             } else if (iconStyle == BatteryRepository.ICON_STYLE_TEXT) {
+                 // Empty on purpose
+             } else {
++                val showInlineBolt = attribution == BatteryGlyph.Bolt
++                val bodyGlyphs = {
++                    if (showInlineBolt) listOf(BatteryGlyph.Bolt) + glyphsProvider()
++                    else glyphsProvider()
++                }
+                 BatteryBody(
+                     pathSpec = BatteryFrame.bodyPathSpec,
+                     levelProvider = levelProvider,
+-                    glyphsProvider = glyphsProvider,
++                    glyphsProvider = bodyGlyphs,
+                     isFullProvider = isFullProvider,
+                     colorsProvider = colorsProvider,
++                    fitGlyphs = showInlineBolt,
+                     modifier = Modifier.layoutId(BatteryMeasurePolicy.LayoutId.Frame),
+                     contentDescription = contentDescription,
+                 )
+-                if (attribution != null) {
++                if (attribution != null && !showInlineBolt) {
+                     BatteryAttribution(
+                         attr = attribution,
+                         colorsProvider = colorsProvider,
+@@ -257,7 +263,7 @@ fun BatteryLayout(
+                     BatteryCap(
+                         colorsProvider = colorsProvider,
+                         isFullProvider = isFullProvider,
+-                        glyphsProvider = glyphsProvider,
++                        glyphsProvider = bodyGlyphs,
+                         modifier = Modifier.layoutId(BatteryMeasurePolicy.LayoutId.Cap),
+                     )
+                 }
+@@ -522,7 +528,8 @@ fun CircleBatteryBody(
+ 
+ /**
+  * Draws just the round-rect piece of the battery frame. If [glyphsProvider] is non-empty, then this
+- * composable also renders the glyphs centered in the frame.
++ * composable also renders the glyphs centered in the frame. [fitGlyphs] scales the charging bolt
++ * and percentage together when they need extra room.
+  *
+  * Always shows the fill amount, clipped to the given [levelProvider]
+  */
+@@ -535,6 +542,7 @@ fun BatteryBody(
+     colorsProvider: () -> BatteryColors,
+     modifier: Modifier = Modifier,
+     contentDescription: String = "",
++    fitGlyphs: Boolean = false,
+ ) {
+     Canvas(modifier = modifier, contentDescription = contentDescription) {
+         val rtl = layoutDirection == LayoutDirection.Rtl
+@@ -589,18 +597,24 @@ fun BatteryBody(
+             }
+ 
+             // Next: draw the glyphs
+-            var horizontalOffset = (BatteryFrame.innerWidth - totalGlyphWidth) / 2f
++            val glyphScale =
++                if (fitGlyphs && totalGlyphWidth > 0f) {
++                    minOf(1f, (BatteryFrame.innerWidth - 2 * INTER_GLYPH_PADDING_PX) / totalGlyphWidth)
++                } else {
++                    1f
++                }
++            var horizontalOffset = (BatteryFrame.innerWidth - totalGlyphWidth * glyphScale) / 2f
+             for (glyph in glyphs) {
+                 // Move the glyph to the right spot
+-                val verticalOffset = (BatteryFrame.innerHeight - glyph.height) / 2
++                val verticalOffset = (BatteryFrame.innerHeight - glyph.height * glyphScale) / 2f
+                 inset(
+                     // Never try and inset more than half of the available size - see b/400246091.
+                     minOf(horizontalOffset, size.width / 2),
+                     minOf(verticalOffset, size.height / 2),
+                 ) {
+-                    glyph.draw(this, colors)
++                    scale(glyphScale, pivot = Offset.Zero) { glyph.draw(this, colors) }
+                 }
+-                horizontalOffset += glyph.width + INTER_GLYPH_PADDING_PX
++                horizontalOffset += (glyph.width + INTER_GLYPH_PADDING_PX) * glyphScale
+             }
+         }
+     }

@@ -1,0 +1,87 @@
+Subject: [PATCH] bootable/recovery: sideload and fstab
+Base-commit: acd99f7c48e0229eaedd40aa3e2adcbabe2dc283
+
+diff --git a/install/adb_install.cpp b/install/adb_install.cpp
+index 24b937b..3f5e2d8 100644
+--- a/install/adb_install.cpp
++++ b/install/adb_install.cpp
+@@ -126,7 +126,7 @@ static auto AdbInstallPackageHandler(Device* device, InstallResult* result) {
+   return std::make_pair(*result == INSTALL_SUCCESS, should_continue);
+ }
+ 
+-static auto AdbRebootHandler(MinadbdCommand command, InstallResult* result,
++static auto AdbRebootHandler(RecoveryUI* ui, MinadbdCommand command, InstallResult* result,
+                              Device::BuiltinAction* reboot_action) {
+   // Use Device::REBOOT_{FASTBOOT,RECOVERY,RESCUE}, instead of the ones with ENTER_. This allows
+   // rebooting back into fastboot/recovery/rescue mode through bootloader, which may use a newly
+@@ -150,6 +150,7 @@ static auto AdbRebootHandler(MinadbdCommand command, InstallResult* result,
+       break;
+   }
+   *result = INSTALL_REBOOT;
++  ui->InterruptKey();
+   return std::make_pair(true, false);
+ }
+ 
+@@ -329,7 +330,8 @@ static void CreateMinadbdServiceAndExecuteCommands(
+         headers, entries, 0, true,
+         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+ 
+-    if (chosen_item != Device::kDoSideload) {
++    if (chosen_item != Device::kDoSideload &&
++        chosen_item != static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+       // Kill minadbd if 'cancel' was selected, to abort sideload.
+       kill(child, SIGKILL);
+     }
+@@ -338,6 +340,7 @@ static void CreateMinadbdServiceAndExecuteCommands(
+   if (listener_thread.joinable()) {
+     listener_thread.join();
+   }
++  ui->ResetKeyInterruptStatus();
+ 
+   int status;
+   waitpid(child, &status, 0);
+@@ -366,17 +369,21 @@ InstallResult ApplyFromAdb(Device* device, bool rescue_mode, Device::BuiltinActi
+   InstallResult install_result = INSTALL_NONE;
+   std::map<MinadbdCommand, CommandFunction> command_map{
+     { MinadbdCommand::kInstall, std::bind(&AdbInstallPackageHandler, device, &install_result) },
+-    { MinadbdCommand::kRebootAndroid, std::bind(&AdbRebootHandler, MinadbdCommand::kRebootAndroid,
+-                                                &install_result, reboot_action) },
++    { MinadbdCommand::kRebootAndroid,
++      std::bind(&AdbRebootHandler, ui, MinadbdCommand::kRebootAndroid, &install_result,
++                reboot_action) },
+     { MinadbdCommand::kRebootBootloader,
+-      std::bind(&AdbRebootHandler, MinadbdCommand::kRebootBootloader, &install_result,
++      std::bind(&AdbRebootHandler, ui, MinadbdCommand::kRebootBootloader, &install_result,
++                reboot_action) },
++    { MinadbdCommand::kRebootFastboot,
++      std::bind(&AdbRebootHandler, ui, MinadbdCommand::kRebootFastboot, &install_result,
++                reboot_action) },
++    { MinadbdCommand::kRebootRecovery,
++      std::bind(&AdbRebootHandler, ui, MinadbdCommand::kRebootRecovery, &install_result,
+                 reboot_action) },
+-    { MinadbdCommand::kRebootFastboot, std::bind(&AdbRebootHandler, MinadbdCommand::kRebootFastboot,
+-                                                 &install_result, reboot_action) },
+-    { MinadbdCommand::kRebootRecovery, std::bind(&AdbRebootHandler, MinadbdCommand::kRebootRecovery,
+-                                                 &install_result, reboot_action) },
+     { MinadbdCommand::kRebootRescue,
+-      std::bind(&AdbRebootHandler, MinadbdCommand::kRebootRescue, &install_result, reboot_action) },
++      std::bind(&AdbRebootHandler, ui, MinadbdCommand::kRebootRescue, &install_result,
++                reboot_action) },
+   };
+ 
+   if (!rescue_mode) {
+diff --git a/install/wipe_data.cpp b/install/wipe_data.cpp
+index 6cce36c..657759b 100644
+--- a/install/wipe_data.cpp
++++ b/install/wipe_data.cpp
+@@ -54,6 +54,10 @@ static bool EraseVolume(const char* volume, RecoveryUI* ui, std::string_view new
+   ui->Print("Formatting %s...\n", volume);
+ 
+   Volume* vol = volume_for_mount_point(volume);
++  if (vol == nullptr) {
++    LOG(ERROR) << "Cannot format " << volume << ": missing recovery fstab entry";
++    return false;
++  }
+   if (vol->fs_mgr_flags.logical) {
+     android::dm::DeviceMapper& dm = android::dm::DeviceMapper::Instance();
+ 

@@ -1,0 +1,26 @@
+Subject: [PATCH] hardware/qcom-caf/sdm660/display: camera preview nv21
+Base-commit: 0ce1694ece44c596362d97c8f375fa7a861b7865
+
+diff --git a/gralloc/gr_utils.cpp b/gralloc/gr_utils.cpp
+index 472ca3a..e9df0fa 100644
+--- a/gralloc/gr_utils.cpp
++++ b/gralloc/gr_utils.cpp
+@@ -27,6 +27,7 @@
+  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
++#include <cutils/properties.h>
+ #include <media/msm_media_info.h>
+ 
+ #include <drm/drm_fourcc.h>
+@@ -1345,6 +1346,10 @@ int GetImplDefinedFormat(uint64_t usage, int format) {
+     } else if (usage & BufferUsage::CAMERA_OUTPUT) {
+       if (format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
+         gr_format = HAL_PIXEL_FORMAT_NV21_ZSL;  // NV21
++      } else if ((usage & BufferUsage::GPU_TEXTURE) &&
++                 property_get_bool("vendor.gralloc.camera_preview_nv21", false)) {
++        // Match the legacy camera HAL's layout for SurfaceView and SurfaceTexture consumers.
++        gr_format = HAL_PIXEL_FORMAT_YCrCb_420_SP;  // NV21
+       } else {
+         gr_format = HAL_PIXEL_FORMAT_YCbCr_420_SP_VENUS;  // NV12 preview
+       }

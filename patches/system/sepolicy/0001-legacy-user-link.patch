@@ -1,0 +1,17 @@
+Subject: [PATCH] system/sepolicy: legacy user link
+Base-commit: 885cc500f6078a766d1f6def5ce4c06c55841773
+
+diff --git a/private/vold.te b/private/vold.te
+index 1eb518817..26006f83c 100644
+--- a/private/vold.te
++++ b/private/vold.te
+@@ -264,7 +264,8 @@ allow vold {
+     system_data_file
+     system_data_root_file
+ }:dir { create_dir_perms mounton };
+-allow vold system_data_file:lnk_file getattr;
++# prepare_special_dirs removes the legacy /data/user/0 symlink before bind-mounting /data/data.
++allow vold system_data_file:lnk_file { getattr unlink };
+ 
+ # Vold create users in /data/vendor_{ce,de}/[0-9]+
+ allow vold vendor_data_file:dir create_dir_perms;
