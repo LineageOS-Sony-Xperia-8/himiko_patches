@@ -1,0 +1,109 @@
+Subject: [PATCH] hardware/qcom-caf/sdm660/display: rgb downscale
+Base-commit: 0ce1694ece44c596362d97c8f375fa7a861b7865
+Related: https://github.com/LineageOS/android_hardware_qcom_display/commit/35e33076652a86f4f276b781f7c6db03f12e3ad6
+
+diff --git a/sdm/libs/hwc2/hwc_display.cpp b/sdm/libs/hwc2/hwc_display.cpp
+index ff903d0..ffbbd37 100644
+--- a/sdm/libs/hwc2/hwc_display.cpp
++++ b/sdm/libs/hwc2/hwc_display.cpp
+@@ -30,6 +30,7 @@
+ #include <qd_utils.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <iomanip>
+ #include <map>
+ #include <sstream>
+@@ -47,6 +48,69 @@ namespace sdm {
+ 
+ std::bitset<kDisplayMax> HWCDisplay::validated_ = 0;
+ 
++namespace {
++
++// Keep downscaled UI buffers on one renderer when a device opts out of MDP's
++// RGB downscale filters. Video, protected content and special buffers retain
++// their existing composition policy.
++bool RgbDownscaleNeedsClient(const Layer &layer, int32_t dataspace) {
++  const auto &buffer = layer.input_buffer;
++  const int32_t transfer = dataspace & HAL_DATASPACE_TRANSFER_MASK;
++  if (layer.flags.solid_fill || layer.flags.cursor || buffer.flags.video ||
++      buffer.flags.secure || buffer.flags.secure_camera || buffer.flags.secure_display ||
++      buffer.flags.hdr || buffer.color_metadata.transfer == Transfer_SMPTE_ST2084 ||
++      buffer.color_metadata.transfer == Transfer_HLG ||
++      transfer == HAL_DATASPACE_TRANSFER_ST2084 || transfer == HAL_DATASPACE_TRANSFER_HLG) {
++    return false;
++  }
++  switch (buffer.format) {
++    case kFormatRGBA8888:
++    case kFormatRGBX8888:
++    case kFormatBGRA8888:
++    case kFormatRGBA8888Ubwc:
++    case kFormatRGBX8888Ubwc:
++      break;
++    default:
++      return false;
++  }
++
++  const bool swap_axes = layer.transform.rotation == 90.0f ||
++                         layer.transform.rotation == 270.0f;
++  const float crop_width = layer.src_rect.right - layer.src_rect.left;
++  const float crop_height = layer.src_rect.bottom - layer.src_rect.top;
++  const float source_width = swap_axes ? crop_height : crop_width;
++  const float source_height = swap_axes ? crop_width : crop_height;
++  const float dest_width = layer.dst_rect.right - layer.dst_rect.left;
++  const float dest_height = layer.dst_rect.bottom - layer.dst_rect.top;
++  if (!std::isfinite(source_width) || !std::isfinite(source_height) ||
++      !std::isfinite(dest_width) || !std::isfinite(dest_height) ||
++      source_width <= 0 || source_height <= 0 || dest_width <= 0 || dest_height <= 0 ||
++      (source_width <= dest_width && source_height <= dest_height)) {
++    return false;
++  }
++
++  auto *handle = reinterpret_cast<private_handle_t *>(buffer.buffer_id);
++  if (!handle || private_handle_t::validate(handle) != 0 ||
++      handle->buffer_type == BUFFER_TYPE_VIDEO ||
++      (handle->usage & (GRALLOC1_PRODUCER_USAGE_VIDEO_DECODER |
++                        GRALLOC1_CONSUMER_USAGE_VIDEO_ENCODER)) ||
++      (handle->flags & (private_handle_t::PRIV_FLAGS_PROTECTED_BUFFER |
++                        private_handle_t::PRIV_FLAGS_SECURE_BUFFER |
++                        private_handle_t::PRIV_FLAGS_SECURE_DISPLAY |
++                        private_handle_t::PRIV_FLAGS_VIDEO_ENCODER))) {
++    return false;
++  }
++
++  // BuildLayerStack resets LayerFlags; single-buffer mode lives in gralloc
++  // metadata. An absent operation (-EINVAL) is ordinary multi-buffer mode;
++  // validation/map failures retain the old policy instead of forcing GPU.
++  uint32_t single_buffer_mode = 0;
++  const int status = getMetaData(handle, GET_SINGLE_BUFFER_MODE, &single_buffer_mode);
++  return single_buffer_mode == 0 && (status == 0 || status == -EINVAL);
++}
++
++}  // namespace
++
+ // This weight function is needed because the color primaries are not sorted by gamut size
+ static ColorPrimaries WidestPrimaries(ColorPrimaries p1, ColorPrimaries p2) {
+   int weight = 10;
+@@ -458,6 +522,9 @@ HWC2::Error HWCDisplay::DestroyLayer(hwc2_layer_t layer_id) {
+ 
+ 
+ void HWCDisplay::BuildLayerStack() {
++  // Device opt-in, cached for the lifetime of this composer process.
++  static const bool disable_rgb_downscale =
++      property_get_bool("vendor.display.disable_rgb_downscale", false);
+   layer_stack_ = LayerStack();
+   display_rect_ = LayerRect();
+   metadata_refresh_rate_ = 0;
+@@ -538,6 +605,12 @@ void HWCDisplay::BuildLayerStack() {
+       layer->flags.skip = true;
+     }
+ 
++    if (disable_rgb_downscale && !layer->flags.skip &&
++        hwc_layer->GetClientRequestedCompositionType() != HWC2::Composition::Cursor &&
++        RgbDownscaleNeedsClient(*layer, hwc_layer->GetLayerDataspace())) {
++      layer->flags.skip = true;
++    }
++
+     if (layer->flags.skip) {
+       layer_stack_.flags.skip_present = true;
+     }
