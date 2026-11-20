@@ -1,0 +1,46 @@
+Subject: [PATCH] packages/apps/Settings: spa route
+Base-commit: 72494c35b673f1b531e1218160e1e514976f6a1e
+
+diff --git a/src/com/android/settings/applications/AppsPreferenceController.java b/src/com/android/settings/applications/AppsPreferenceController.java
+index 02ddc1d..2deed35 100644
+--- a/src/com/android/settings/applications/AppsPreferenceController.java
++++ b/src/com/android/settings/applications/AppsPreferenceController.java
+@@ -16,6 +16,7 @@
+ 
+ package com.android.settings.applications;
+ 
++import static com.android.settings.applications.manageapplications.ManageApplications.LIST_TYPE_MAIN;
+ import static com.android.settings.spa.app.appinfo.AppInfoSettingsProvider.startAppInfoSettings;
+ 
+ import android.app.Application;
+@@ -35,7 +36,9 @@ import androidx.preference.PreferenceCategory;
+ import androidx.preference.PreferenceScreen;
+ 
+ import com.android.settings.R;
++import com.android.settings.applications.manageapplications.ManageApplicationsUtil;
+ import com.android.settings.core.BasePreferenceController;
++import com.android.settings.spa.SpaActivity;
+ import com.android.settingslib.Utils;
+ import com.android.settingslib.applications.ApplicationsState;
+ import com.android.settingslib.utils.StringUtil;
+@@ -117,6 +120,20 @@ public class AppsPreferenceController extends BasePreferenceController implement
+         mInitialLaunch = false;
+     }
+ 
++    @Override
++    public boolean handlePreferenceTreeClick(Preference preference) {
++        final String key = preference.getKey();
++        if (!TextUtils.equals(key, KEY_SEE_ALL) && !TextUtils.equals(key, KEY_ALL_APP_INFO)) {
++            return super.handlePreferenceTreeClick(preference);
++        }
++        final String destination = ManageApplicationsUtil.getSpaDestination(mContext, LIST_TYPE_MAIN);
++        if (destination == null) {
++            return super.handlePreferenceTreeClick(preference);
++        }
++        SpaActivity.startSpaActivity(mContext, destination);
++        return true;
++    }
++
+     @VisibleForTesting
+     void refreshUi() {
+         loadAllAppsCount();

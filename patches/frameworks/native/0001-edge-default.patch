@@ -1,0 +1,16 @@
+Subject: [PATCH] frameworks/native: edge default
+Base-commit: 9568531f9be7ae65f260699811f32ec4e461de6e
+
+diff --git a/libs/ui/include/ui/EdgeExtensionEffect.h b/libs/ui/include/ui/EdgeExtensionEffect.h
+index 02126b1..f84a1de 100644
+--- a/libs/ui/include/ui/EdgeExtensionEffect.h
++++ b/libs/ui/include/ui/EdgeExtensionEffect.h
+@@ -55,7 +55,7 @@ struct EdgeExtensionEffect {
+         }
+     }
+ 
+-    EdgeExtensionEffect() { EdgeExtensionEffect(false, false, false, false); }
++    EdgeExtensionEffect() : EdgeExtensionEffect(false, false, false, false) {}
+ 
+     bool extendsEdge(CanonicalDirections edge) const { return extensionEdges & edge; }
+ 

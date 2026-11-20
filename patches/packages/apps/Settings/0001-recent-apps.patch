@@ -1,0 +1,57 @@
+Subject: [PATCH] packages/apps/Settings: recent apps
+Base-commit: 72494c35b673f1b531e1218160e1e514976f6a1e
+
+diff --git a/src/com/android/settings/applications/RecentAppStatsMixin.java b/src/com/android/settings/applications/RecentAppStatsMixin.java
+index b260418..6c7a499 100644
+--- a/src/com/android/settings/applications/RecentAppStatsMixin.java
++++ b/src/com/android/settings/applications/RecentAppStatsMixin.java
+@@ -139,7 +139,7 @@ public class RecentAppStatsMixin implements LifecycleObserver, OnStart {
+             }
+ 
+             List<UsageStats> profileStats = usageStatsManager
+-                    .map(statsManager -> getRecentAppsStats(statsManager, userId))
++                    .map(this::getRecentAppsStats)
+                     .orElse(new ArrayList<>());
+             usageStatsAllUsers.addAll(profileStats.stream()
+                         .map(usageStats-> new UsageStatsWrapper(usageStats, userId))
+@@ -149,10 +149,13 @@ public class RecentAppStatsMixin implements LifecycleObserver, OnStart {
+         // Sort apps by latest timestamp.
+         usageStatsAllUsers.sort(
+                 Comparator.comparingLong(a -> -1 * a.mUsageStats.getLastTimeUsed()));
+-        mRecentApps.addAll(usageStatsAllUsers.stream().limit(limit).collect(Collectors.toList()));
++        mRecentApps.addAll(usageStatsAllUsers.stream()
++                .filter(stats -> shouldIncludePkgInRecents(stats.mUsageStats, stats.mUserId))
++                .limit(limit)
++                .collect(Collectors.toList()));
+     }
+ 
+-    private List<UsageStats> getRecentAppsStats(UsageStatsManager usageStatsManager, int userId) {
++    private List<UsageStats> getRecentAppsStats(UsageStatsManager usageStatsManager) {
+         final List<UsageStats> recentAppStats = mPowerManager.isPowerSaveMode()
+                 ? new ArrayList<>()
+                 : usageStatsManager.queryUsageStats(
+@@ -161,7 +164,10 @@ public class RecentAppStatsMixin implements LifecycleObserver, OnStart {
+ 
+         final Map<String, UsageStats> map = new ArrayMap<>();
+         for (final UsageStats pkgStats : recentAppStats) {
+-            if (!shouldIncludePkgInRecents(pkgStats, userId)) {
++            // Reject expired records before merging their usage into a recent record.
++            if (pkgStats.getLastTimeUsed() < mCalendar.getTimeInMillis()) {
++                Log.d(TAG, "Invalid timestamp (usage time is more than 24 hours ago), skipping "
++                        + pkgStats.getPackageName());
+                 continue;
+             }
+             final String pkgName = pkgStats.getPackageName();
+@@ -182,12 +188,6 @@ public class RecentAppStatsMixin implements LifecycleObserver, OnStart {
+      */
+     private boolean shouldIncludePkgInRecents(UsageStats stat, int userId) {
+         final String pkgName = stat.getPackageName();
+-        if (stat.getLastTimeUsed() < mCalendar.getTimeInMillis()) {
+-            Log.d(TAG, "Invalid timestamp (usage time is more than 24 hours ago), skipping "
+-                    + pkgName);
+-            return false;
+-        }
+-
+         if (SKIP_SYSTEM_PACKAGES.contains(pkgName)) {
+             Log.d(TAG, "System package, skipping " + pkgName);
+             return false;
