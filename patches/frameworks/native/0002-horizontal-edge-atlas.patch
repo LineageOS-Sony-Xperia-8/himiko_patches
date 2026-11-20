@@ -49,7 +49,7 @@ index a719aaf..0f41e26 100644
          }
  
 diff --git a/libs/renderengine/skia/SkiaRenderEngine.cpp b/libs/renderengine/skia/SkiaRenderEngine.cpp
-index daa0ecc..5bd2e13 100644
+index daa0ecc..8ae6d18 100644
 --- a/libs/renderengine/skia/SkiaRenderEngine.cpp
 +++ b/libs/renderengine/skia/SkiaRenderEngine.cpp
 @@ -55,6 +55,7 @@
@@ -60,11 +60,13 @@ index daa0ecc..5bd2e13 100644
  #include <include/gpu/ganesh/GrTypes.h>
  #include <include/gpu/ganesh/SkSurfaceGanesh.h>
  #include <pthread.h>
-@@ -1222,6 +1223,22 @@ void SkiaRenderEngine::drawLayersInternal(
+@@ -1222,6 +1223,33 @@ void SkiaRenderEngine::drawLayersInternal(
              SkRect imageBounds;
              matrix.mapRect(&imageBounds, SkRect::Make(image->bounds()));
  
 +            if (layer.edgeExtensionEffect.hasEffect() && SFTRACE_ENABLED()) {
++                const auto& deviceMatrix = canvas->getTotalMatrix();
++                const auto& rect = bounds.rect();
 +                SFTRACE_FORMAT(
 +                        "EdgeSampler filtering=%d matrix=[%.9g,%.9g,%.9g;%.9g,%.9g,%.9g;%.9g,%.9g,%.9g] "
 +                        "image=[%.9g,%.9g,%.9g,%.9g] colorType=%d alphaType=%d opaque=%d "
@@ -78,12 +80,21 @@ index daa0ecc..5bd2e13 100644
 +                        SkColorSpace::Equals(image->colorSpace(),
 +                                             activeSurface->imageInfo().colorSpace()),
 +                        layer.stretchEffect.hasEffect(), static_cast<bool>(layer.luts));
++                SFTRACE_FORMAT(
++                        "EdgeGate ds=%d/%d dst=%d lin=%d r=[%.9g,%.9g,%.9g,%.9g] "
++                        "shape=%d clip0=%d tr=%d xy=[%.9g,%.9g] prot=%d",
++                        static_cast<int32_t>(layer.sourceDataspace),
++                        static_cast<int32_t>(display.outputDataspace),
++                        activeSurface->imageInfo().colorType(), requiresLinearEffect,
++                        rect.left(), rect.top(), rect.right(), rect.bottom(), bounds.isRect(),
++                        roundRectClip.isEmpty(), deviceMatrix.isTranslate(),
++                        deviceMatrix.getTranslateX(), deviceMatrix.getTranslateY(), isProtected());
 +            }
 +
              paint.setShader(createRuntimeEffectShader(RuntimeEffectShaderParameters{
                      .shader = shader,
                      .layer = layer,
-@@ -1234,6 +1251,69 @@ void SkiaRenderEngine::drawLayersInternal(
+@@ -1234,6 +1262,72 @@ void SkiaRenderEngine::drawLayersInternal(
                      .imageBounds = imageBounds,
              }));
  
@@ -100,7 +111,10 @@ index daa0ecc..5bd2e13 100644
 +                const bool canPrecomputeHorizontalExtension =
 +                        recordingContext && recordingContext->backend() == GrBackendApi::kOpenGL &&
 +                        layer.sourceDataspace == ui::Dataspace::V0_SRGB &&
-+                        display.outputDataspace == ui::Dataspace::V0_SRGB && rect.isFinite() &&
++                        // Output uses UNKNOWN on non-wide-color displays; ColorSpaces maps it
++                        // to sRGB. The actual image/destination color spaces must still match.
++                        (display.outputDataspace == ui::Dataspace::V0_SRGB ||
++                         display.outputDataspace == ui::Dataspace::UNKNOWN) && rect.isFinite() &&
 +                        std::isfinite(deviceMatrix.getTranslateX()) &&
 +                        std::isfinite(deviceMatrix.getTranslateY()) && edges.hasEffect() &&
 +                        !edges.extendsEdge(TOP) && !edges.extendsEdge(BOTTOM) &&
