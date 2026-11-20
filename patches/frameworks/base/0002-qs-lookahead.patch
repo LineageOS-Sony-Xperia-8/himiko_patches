@@ -1,0 +1,32 @@
+Subject: [PATCH] frameworks/base: qs lookahead
+Base-commit: 4617d71eb23447fb325178ac34a0fd7daa1b0597
+Upstream: https://github.com/LineageOS/android_frameworks_base/commit/a927322b62b159dd35e8da5752e64c9e8f7e9829
+
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/panels/ui/compose/infinitegrid/SquishTile.kt b/packages/SystemUI/src/com/android/systemui/qs/panels/ui/compose/infinitegrid/SquishTile.kt
+--- a/packages/SystemUI/src/com/android/systemui/qs/panels/ui/compose/infinitegrid/SquishTile.kt
++++ b/packages/SystemUI/src/com/android/systemui/qs/panels/ui/compose/infinitegrid/SquishTile.kt
+@@ -36,12 +36,10 @@ fun Modifier.verticalSquish(squishiness: () -> Float): Modifier {
+     return approachLayout(
+         isMeasurementApproachInProgress = { squishiness() < 1 },
+         approachMeasure = { measurable, constraints ->
+-            val value = squishiness()
++            val squishinessValue = if (isLookingAhead) 1f else squishiness()
+ 
+-            // Skip squishing during lookahead or when squishiness is 1.0.
+-            // Lookahead: Ensures accurate pre-layout size.
+-            // Squishiness 1f: Prevents unnecessary calculations when no squishing is needed.
+-            if (isLookingAhead || value == 1f) {
++            // Prevents unnecessary calculations when no squishing is needed.
++            if (squishinessValue == 1f) {
+                 return@approachLayout measurable.measure(constraints).run {
+                     layout(width, height) { place(0, 0) }
+                 }
+@@ -50,7 +48,7 @@ fun Modifier.verticalSquish(squishiness: () -> Float): Modifier {
+             val expectedHeight = lookaheadSize.height
+ 
+             val placeable = measurable.measure(lookaheadConstraints)
+-            val squishedHeight = (expectedHeight * value).roundToInt()
++            val squishedHeight = (expectedHeight * squishinessValue).roundToInt()
+             // Center the content by moving it UP (squishedHeight < actualHeight)
+             val scroll = (squishedHeight - expectedHeight) / 2
+ 
